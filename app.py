@@ -71,7 +71,11 @@ if prompt := st.chat_input("Ask a question about the Sales Reporting Manager..."
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    client = anthropic.Anthropic()
+    api_key = st.secrets.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        st.error("ANTHROPIC_API_KEY not found. Add it in Streamlit Cloud → Settings → Secrets.")
+        st.stop()
+    client = anthropic.Anthropic(api_key=api_key)
 
     with st.chat_message("assistant"):
         response_placeholder = st.empty()
