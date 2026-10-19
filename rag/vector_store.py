@@ -3,7 +3,7 @@ Vector store wrapper — ChromaDB with OpenAI text-embedding-3-small.
 
 Why ChromaDB
 ------------
-* Persistent, file-based storage (no separate server required).
+* Works in-memory (Streamlit Cloud) or persistent (local dev).
 * Simple Python API; easy to swap for Pinecone / pgvector later.
 * Supports metadata filtering (source, page, section).
 
@@ -16,7 +16,12 @@ Why text-embedding-3-small
 Required environment variables
 -------------------------------
     OPENAI_API_KEY          – OpenAI API key for embeddings
-    CHROMA_PERSIST_DIR      – Local directory for ChromaDB storage (default: ./chroma_db)
+
+Optional environment variables
+-------------------------------
+    CHROMA_PERSIST_DIR      – Local directory for persistent ChromaDB storage.
+                              Omit (or set to empty string) to use in-memory mode,
+                              which is required on Streamlit Community Cloud.
     CHROMA_COLLECTION       – Collection name (default: copa_knowledge)
 """
 
@@ -63,12 +68,19 @@ class VectorStore:
         persist_dir: str | None = None,
         collection_name: str | None = None,
     ) -> None:
-        self.persist_dir = persist_dir or os.environ.get("CHROMA_PERSIST_DIR", DEFAULT_PERSIST)
+        # persist_dir=None or "" → in-memory (required on Streamlit Cloud)
+        env_dir = os.environ.get("CHROMA_PERSIST_DIR", "").strip()
+        self.persist_dir = persist_dir if persist_dir is not None else (env_dir or None)
         self.collection_name = (
             collection_name
             or os.environ.get("CHROMA_COLLECTION", DEFAULT_COLLECTION)
         )
-        self._client = chromadb.PersistentClient(path=self.persist_dir)
+        if self.persist_dir:
+            self._client = chromadb.PersistentClient(path=self.persist_dir)
+            mode = f"persistent at '{self.persist_dir}'"
+        else:
+            self._client = chromadb.EphemeralClient()
+            mode = "in-memory"
         self._ef = _get_ef()
         self._collection = self._client.get_or_create_collection(
             name=self.collection_name,
@@ -76,9 +88,9 @@ class VectorStore:
             metadata={"hnsw:space": "cosine"},
         )
         logger.info(
-            "VectorStore ready — collection '%s' in '%s' (%d docs)",
+            "VectorStore ready — collection '%s' (%s, %d docs)",
             self.collection_name,
-            self.persist_dir,
+            mode,
             self._collection.count(),
         )
 

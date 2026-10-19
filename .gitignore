@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 *.pyo
 .env
+chroma_db/
+.streamlit/secrets.toml
