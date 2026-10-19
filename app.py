@@ -1,13 +1,25 @@
 """
 Copa Airlines Knowledge Assistant — RAG edition
-Streamlit web interface powered by ChromaDB (in-memory) + OpenAI embeddings + Claude.
+Streamlit web interface powered by OpenAI embeddings + Claude.
+
+Two vector-store modes (auto-detected):
+
+  Pinecone (recommended for 300 MB+ SharePoint content)
+  -------------------------------------------------------
+  Add PINECONE_API_KEY (and optionally PINECONE_INDEX_NAME) to Streamlit Secrets.
+  Index your documents once locally:  python ingest.py --local <folder>
+  The app queries the persistent cloud index — instant cold start, no re-indexing.
+
+  ChromaDB in-memory (fallback, for the committed sample PDF)
+  -----------------------------------------------------------
+  No PINECONE_API_KEY → app auto-indexes the committed PDF on first load (~30 s).
+  Users can also upload documents via the sidebar; they are indexed into the same store.
 
 Deployment — Streamlit Community Cloud
   1. Push this repo to GitHub.
   2. Connect the repo on share.streamlit.io.
   3. Add secrets in Settings → Secrets (see .streamlit/secrets.toml.example).
-  4. Deploy — the app indexes the committed PDF on first load (~30 s cold start).
-  5. Drop additional documents (PDFs, Word, PPTX…) via the Upload panel in the sidebar.
+  4. Deploy.
 
 Local development
   pip install -r requirements.txt
@@ -195,18 +207,35 @@ def _require_secret(key: str, label: str) -> str:
 
 
 # ── Load RAG store (cached for app lifetime) ──────────────────────────────────
-@st.cache_resource(show_spinner="✈️  Indexing knowledge base — first load takes ~30 seconds…")
+@st.cache_resource(show_spinner="✈️  Connecting to knowledge base…")
 def load_store():
-    """Build an in-memory ChromaDB store from committed repo documents."""
+    """
+    Return (store, repo_indexed_list).
+
+    - If PINECONE_API_KEY is set: connect to the persistent Pinecone index.
+      No local re-indexing — documents were ingested once with ingest.py.
+    - Otherwise: build an in-memory ChromaDB store and auto-index REPO_DOCUMENTS.
+    """
     openai_key = _require_secret("OPENAI_API_KEY", "OpenAI API key")
     os.environ["OPENAI_API_KEY"] = openai_key
 
+    pinecone_key = _secret("PINECONE_API_KEY")
+    if pinecone_key:
+        os.environ["PINECONE_API_KEY"] = pinecone_key
+        pinecone_index = _secret("PINECONE_INDEX_NAME") or "copa-knowledge"
+        os.environ["PINECONE_INDEX_NAME"] = pinecone_index
+
+        from rag.vector_store import PineconeVectorStore
+        store = PineconeVectorStore(index_name=pinecone_index)
+        # Documents were already ingested offline; show index name as the source
+        return store, [f"Pinecone index: {pinecone_index}"]
+
+    # Fallback: in-memory ChromaDB + auto-index committed docs
     from rag.vector_store import VectorStore
     from rag.document_loader import load_document
     from rag.chunker import chunk_records
 
     store = VectorStore(persist_dir=None)
-
     repo_root = Path(__file__).parent
     indexed: list[str] = []
     for filename in REPO_DOCUMENTS:
@@ -320,7 +349,9 @@ with st.sidebar:
 
         st.markdown("**Knowledge Base**")
         for f in repo_indexed:
-            st.markdown(f'<div class="doc-chip">✅ {f}</div>', unsafe_allow_html=True)
+            is_pinecone = f.startswith("Pinecone index:")
+            icon = "☁️" if is_pinecone else "✅"
+            st.markdown(f'<div class="doc-chip">{icon} {f}</div>', unsafe_allow_html=True)
 
         # Show uploaded docs
         for f in st.session_state.get("uploaded_docs", []):
