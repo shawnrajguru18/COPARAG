@@ -1,3 +1,12 @@
 anthropic>=0.50.0
 pymupdf>=1.24.0
 streamlit>=1.35.0
+
+# RAG dependencies
+openai>=1.30.0          # text-embedding-3-small
+chromadb>=0.5.0         # vector store
+python-docx>=1.1.0      # DOCX ingestion
+python-pptx>=0.6.23     # PPTX ingestion
+
+# SharePoint ingestion (optional — only needed for --sharepoint mode)
+requests>=2.32.0        # Graph API HTTP client
