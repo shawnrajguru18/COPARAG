@@ -6,12 +6,12 @@ Deployment — Streamlit Community Cloud
   1. Push this repo to GitHub.
   2. Connect the repo on share.streamlit.io.
   3. Add secrets in Settings → Secrets (see .streamlit/secrets.toml.example).
-  4. Deploy — the app indexes documents on first load (~30 s cold start).
+  4. Deploy — the app indexes the committed PDF on first load (~30 s cold start).
+  5. Drop additional documents (PDFs, Word, PPTX…) via the Upload panel in the sidebar.
 
 Local development
   pip install -r requirements.txt
   cp .streamlit/secrets.toml.example .streamlit/secrets.toml
-  # fill in ANTHROPIC_API_KEY and OPENAI_API_KEY
   streamlit run app.py
 """
 
@@ -20,17 +20,25 @@ from __future__ import annotations
 import os
 import re
 import logging
+import tempfile
 from pathlib import Path
 
 import streamlit as st
 
 logging.basicConfig(level=logging.INFO)
 
-# ── Documents to auto-index on startup ────────────────────────────────────────
-# Add filenames here as you commit new documents to the repo.
+# ── Documents committed to the repo that are always auto-indexed ──────────────
 REPO_DOCUMENTS = [
     "Sales Reporting Solution Guide_v1.2_2026MAR.pdf",
 ]
+
+SUPPORTED_TYPES = {
+    "application/pdf":          ".pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+    "text/plain":               ".txt",
+}
+SUPPORTED_EXTENSIONS = [".pdf", ".docx", ".pptx", ".txt"]
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -43,7 +51,6 @@ st.set_page_config(
 # ── Copa brand CSS ─────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-/* ── Brand tokens ───────────────────────────────────────────────────────── */
 :root {
     --copa-blue:      #003087;
     --copa-blue-dark: #001f5b;
@@ -55,16 +62,10 @@ st.markdown("""
     --copa-text:      #1a1a2e;
     --copa-muted:     #6b7280;
     --copa-success:   #10a37f;
-    --copa-warn:      #f59e0b;
-    --copa-error:     #ef4444;
 }
-
-/* ── Global ─────────────────────────────────────────────────────────────── */
 html, body, [class*="css"] { font-family: 'Inter', 'Segoe UI', sans-serif; }
-
 .stApp { background: var(--copa-bg); }
 
-/* ── Sidebar ────────────────────────────────────────────────────────────── */
 [data-testid="stSidebar"] {
     background: var(--copa-blue) !important;
     border-right: none !important;
@@ -73,8 +74,6 @@ html, body, [class*="css"] { font-family: 'Inter', 'Segoe UI', sans-serif; }
 [data-testid="stSidebar"] .stMarkdown p,
 [data-testid="stSidebar"] .stCaption   { color: rgba(255,255,255,0.75) !important; }
 [data-testid="stSidebar"] hr           { border-color: rgba(255,255,255,0.2) !important; }
-
-/* Sidebar buttons (suggested questions) */
 [data-testid="stSidebar"] .stButton > button {
     background: rgba(255,255,255,0.08) !important;
     border: 1px solid rgba(255,255,255,0.2) !important;
@@ -89,148 +88,88 @@ html, body, [class*="css"] { font-family: 'Inter', 'Segoe UI', sans-serif; }
     background: rgba(232,184,75,0.25) !important;
     border-color: var(--copa-gold) !important;
 }
-/* Clear button */
-[data-testid="stSidebar"] .stButton:last-of-type > button {
-    background: rgba(239,68,68,0.15) !important;
-    border-color: rgba(239,68,68,0.4) !important;
+
+/* File uploader in sidebar */
+[data-testid="stSidebar"] [data-testid="stFileUploader"] {
+    background: rgba(255,255,255,0.07) !important;
+    border: 1.5px dashed rgba(255,255,255,0.35) !important;
+    border-radius: 10px !important;
+    padding: 8px !important;
 }
-[data-testid="stSidebar"] .stButton:last-of-type > button:hover {
-    background: rgba(239,68,68,0.3) !important;
+[data-testid="stSidebar"] [data-testid="stFileUploader"] * {
+    color: rgba(255,255,255,0.85) !important;
+}
+[data-testid="stSidebar"] [data-testid="stFileUploader"] button {
+    background: var(--copa-gold) !important;
+    color: var(--copa-blue-dark) !important;
+    border: none !important;
+    border-radius: 6px !important;
+    font-weight: 700 !important;
 }
 
-/* ── Main header ────────────────────────────────────────────────────────── */
 .copa-header {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    padding: 18px 24px;
-    background: var(--copa-blue);
-    border-radius: 12px;
-    margin-bottom: 20px;
+    display: flex; align-items: center; gap: 14px;
+    padding: 18px 24px; background: var(--copa-blue);
+    border-radius: 12px; margin-bottom: 20px;
     box-shadow: 0 2px 12px rgba(0,48,135,0.18);
 }
-.copa-header-text h1 {
-    color: #ffffff;
-    font-size: 1.5rem;
-    font-weight: 700;
-    margin: 0;
-    line-height: 1.2;
-}
-.copa-header-text p {
-    color: var(--copa-gold);
-    font-size: 0.82rem;
-    margin: 2px 0 0;
-    opacity: 0.9;
-}
+.copa-header-text h1 { color:#fff; font-size:1.5rem; font-weight:700; margin:0; line-height:1.2; }
+.copa-header-text p  { color:var(--copa-gold); font-size:0.82rem; margin:2px 0 0; opacity:.9; }
 .copa-badge {
-    background: var(--copa-gold);
-    color: var(--copa-blue-dark);
-    font-size: 0.68rem;
-    font-weight: 700;
-    padding: 3px 8px;
-    border-radius: 20px;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    white-space: nowrap;
+    background: var(--copa-gold); color: var(--copa-blue-dark);
+    font-size: 0.68rem; font-weight: 700; padding: 3px 8px;
+    border-radius: 20px; letter-spacing: .05em; text-transform: uppercase; white-space: nowrap;
 }
-
-/* ── Welcome card ────────────────────────────────────────────────────────── */
 .copa-welcome {
-    background: var(--copa-surface);
-    border: 1px solid var(--copa-border);
-    border-left: 4px solid var(--copa-gold);
-    border-radius: 10px;
-    padding: 18px 22px;
-    margin-bottom: 20px;
+    background: var(--copa-surface); border: 1px solid var(--copa-border);
+    border-left: 4px solid var(--copa-gold); border-radius: 10px;
+    padding: 18px 22px; margin-bottom: 20px;
 }
 .copa-welcome h3 { color: var(--copa-blue); margin: 0 0 6px; font-size: 1rem; }
 .copa-welcome p  { color: var(--copa-muted); margin: 0; font-size: 0.87rem; line-height: 1.5; }
-
-/* ── Chat messages ───────────────────────────────────────────────────────── */
 [data-testid="stChatMessage"] {
-    border-radius: 12px !important;
-    margin-bottom: 10px !important;
-    padding: 14px 18px !important;
-    border: 1px solid var(--copa-border) !important;
+    border-radius: 12px !important; margin-bottom: 10px !important;
+    padding: 14px 18px !important; border: 1px solid var(--copa-border) !important;
     background: var(--copa-surface) !important;
     box-shadow: 0 1px 4px rgba(0,0,0,0.04) !important;
 }
-/* User messages */
-[data-testid="stChatMessage"][data-testid*="user"],
 [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) {
-    background: var(--copa-gold-lt) !important;
-    border-color: #e8d5a0 !important;
+    background: var(--copa-gold-lt) !important; border-color: #e8d5a0 !important;
 }
-
-/* ── Citation cards ─────────────────────────────────────────────────────── */
 .citation-card {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    background: var(--copa-bg);
-    border: 1px solid var(--copa-border);
-    border-radius: 20px;
-    padding: 4px 12px;
-    font-size: 0.78rem;
-    color: var(--copa-blue);
-    font-weight: 500;
-    margin: 3px 3px 3px 0;
-    white-space: nowrap;
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--copa-bg); border: 1px solid var(--copa-border);
+    border-radius: 20px; padding: 4px 12px; font-size: 0.78rem;
+    color: var(--copa-blue); font-weight: 500; margin: 3px 3px 3px 0; white-space: nowrap;
 }
 .citation-card .ref-badge {
-    background: var(--copa-blue);
-    color: white;
-    border-radius: 10px;
-    padding: 1px 6px;
-    font-size: 0.72rem;
-    font-weight: 700;
+    background: var(--copa-blue); color: white; border-radius: 10px;
+    padding: 1px 6px; font-size: 0.72rem; font-weight: 700;
 }
 .citation-section {
-    margin-top: 14px;
-    padding-top: 12px;
-    border-top: 1px solid var(--copa-border);
+    margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--copa-border);
 }
 .citation-section .citation-label {
-    font-size: 0.75rem;
-    color: var(--copa-muted);
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    margin-bottom: 8px;
+    font-size: 0.75rem; color: var(--copa-muted); font-weight: 600;
+    text-transform: uppercase; letter-spacing: .06em; margin-bottom: 8px;
 }
-
-/* ── Status chips in sidebar ─────────────────────────────────────────────── */
 .doc-chip {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    background: rgba(16,163,127,0.15);
-    border: 1px solid rgba(16,163,127,0.35);
-    border-radius: 8px;
-    padding: 6px 10px;
-    margin-bottom: 5px;
-    font-size: 0.78rem;
+    display: flex; align-items: center; gap: 8px;
+    background: rgba(16,163,127,0.15); border: 1px solid rgba(16,163,127,0.35);
+    border-radius: 8px; padding: 6px 10px; margin-bottom: 5px; font-size: 0.78rem;
 }
-
-/* ── Input area ─────────────────────────────────────────────────────────── */
+.upload-chip {
+    display: flex; align-items: center; gap: 8px;
+    background: rgba(232,184,75,0.18); border: 1px solid rgba(232,184,75,0.4);
+    border-radius: 8px; padding: 6px 10px; margin-bottom: 5px; font-size: 0.78rem;
+}
 [data-testid="stChatInputContainer"] textarea {
-    border-radius: 10px !important;
-    border: 1.5px solid var(--copa-border) !important;
-    font-size: 0.92rem !important;
+    border-radius: 10px !important; border: 1.5px solid var(--copa-border) !important;
 }
 [data-testid="stChatInputContainer"] textarea:focus {
     border-color: var(--copa-blue) !important;
     box-shadow: 0 0 0 2px rgba(0,48,135,0.12) !important;
 }
-
-/* ── Expander (sources) ─────────────────────────────────────────────────── */
-.streamlit-expanderHeader {
-    font-size: 0.82rem !important;
-    color: var(--copa-blue) !important;
-    font-weight: 600 !important;
-}
-
-/* ── Hide Streamlit branding ─────────────────────────────────────────────── */
 #MainMenu, footer, header { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
@@ -250,10 +189,7 @@ def _secret(key: str) -> str | None:
 def _require_secret(key: str, label: str) -> str:
     val = _secret(key)
     if not val:
-        st.error(
-            f"**{label}** not found. "
-            f"Add `{key}` in Streamlit Cloud → Settings → Secrets."
-        )
+        st.error(f"**{label}** not found. Add `{key}` in Streamlit Cloud → Settings → Secrets.")
         st.stop()
     return val
 
@@ -261,6 +197,7 @@ def _require_secret(key: str, label: str) -> str:
 # ── Load RAG store (cached for app lifetime) ──────────────────────────────────
 @st.cache_resource(show_spinner="✈️  Indexing knowledge base — first load takes ~30 seconds…")
 def load_store():
+    """Build an in-memory ChromaDB store from committed repo documents."""
     openai_key = _require_secret("OPENAI_API_KEY", "OpenAI API key")
     os.environ["OPENAI_API_KEY"] = openai_key
 
@@ -268,22 +205,55 @@ def load_store():
     from rag.document_loader import load_document
     from rag.chunker import chunk_records
 
-    store   = VectorStore(persist_dir=None)   # in-memory, works on Streamlit Cloud
-    indexed: list[str] = []
+    store = VectorStore(persist_dir=None)
 
     repo_root = Path(__file__).parent
+    indexed: list[str] = []
     for filename in REPO_DOCUMENTS:
         path = repo_root / filename
         if not path.exists():
             continue
         try:
-            chunks = chunk_records(load_document(path))
-            store.upsert(chunks)
+            store.upsert(chunk_records(load_document(path)))
             indexed.append(filename)
         except Exception as exc:
             st.warning(f"Could not index {filename}: {exc}")
 
     return store, indexed
+
+
+def _index_uploaded_file(uploaded_file, store) -> str | None:
+    """
+    Save an uploaded file to a temp path, index it, return its name on success.
+    Returns None on failure (warning already shown).
+    """
+    from rag.document_loader import load_document
+    from rag.chunker import chunk_records
+
+    suffix = Path(uploaded_file.name).suffix.lower()
+    try:
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(uploaded_file.getvalue())
+            tmp_path = Path(tmp.name)
+        # Give the chunk its real filename as source
+        records = load_document(tmp_path)
+        for r in records:
+            r["source"] = uploaded_file.name     # override temp filename
+        chunks = chunk_records(records)
+        for c in chunks:
+            c["source"]   = uploaded_file.name
+            c["chunk_id"] = c["chunk_id"].replace(tmp_path.name, uploaded_file.name)
+        store.delete_source(uploaded_file.name)  # remove stale version if any
+        store.upsert(chunks)
+        return uploaded_file.name
+    except Exception as exc:
+        st.warning(f"Could not index {uploaded_file.name}: {exc}")
+        return None
+    finally:
+        try:
+            tmp_path.unlink()
+        except Exception:
+            pass
 
 
 # ── Response rendering ────────────────────────────────────────────────────────
@@ -311,7 +281,6 @@ def render_response(text: str) -> None:
 def render_citations(chunks: list[dict]) -> None:
     if not chunks:
         return
-    # Deduplicate by source+page
     seen: set[str] = set()
     unique: list[tuple[int, dict]] = []
     for i, c in enumerate(chunks, start=1):
@@ -319,7 +288,6 @@ def render_citations(chunks: list[dict]) -> None:
         if key not in seen:
             seen.add(key)
             unique.append((i, c))
-
     pills = ""
     for ref, c in unique:
         section = f" · {c['section']}" if c.get("section") else ""
@@ -329,19 +297,14 @@ def render_citations(chunks: list[dict]) -> None:
             f'📄 {c["source"]} · p.{c["page"]}{section}'
             f'</span>'
         )
-
     st.markdown(
-        f'<div class="citation-section">'
-        f'<div class="citation-label">📎 Sources</div>'
-        f'{pills}'
-        f'</div>',
+        f'<div class="citation-section"><div class="citation-label">📎 Sources</div>{pills}</div>',
         unsafe_allow_html=True,
     )
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
-    # Logo
     try:
         st.image(
             "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e1/Copa_Airlines_logo.svg/320px-Copa_Airlines_logo.svg.png",
@@ -351,22 +314,55 @@ with st.sidebar:
         st.markdown("### ✈️ Copa Airlines")
     st.markdown("&nbsp;")
 
-    # Index status
+    # ── Knowledge base status ─────────────────────────────────────────────────
     try:
-        store, indexed_files = load_store()
+        store, repo_indexed = load_store()
+
         st.markdown("**Knowledge Base**")
-        for f in indexed_files:
-            st.markdown(
-                f'<div class="doc-chip">✅ {f}</div>',
-                unsafe_allow_html=True,
-            )
-        st.markdown(f"<small style='color:rgba(255,255,255,0.5)'>{store.count} chunks indexed</small>", unsafe_allow_html=True)
+        for f in repo_indexed:
+            st.markdown(f'<div class="doc-chip">✅ {f}</div>', unsafe_allow_html=True)
+
+        # Show uploaded docs
+        for f in st.session_state.get("uploaded_docs", []):
+            st.markdown(f'<div class="upload-chip">📤 {f}</div>', unsafe_allow_html=True)
+
+        st.markdown(
+            f"<small style='color:rgba(255,255,255,0.5)'>{store.count} chunks indexed</small>",
+            unsafe_allow_html=True,
+        )
     except Exception as exc:
         st.error(f"Startup error: {exc}")
 
     st.divider()
 
-    # Suggested questions
+    # ── Document upload ────────────────────────────────────────────────────────
+    st.markdown("**📂 Upload Documents**")
+    st.caption("PDF, Word, PowerPoint, or TXT — indexed immediately")
+
+    uploaded_files = st.file_uploader(
+        "Drop files here",
+        type=["pdf", "docx", "pptx", "txt"],
+        accept_multiple_files=True,
+        label_visibility="collapsed",
+        key="doc_uploader",
+    )
+
+    if uploaded_files:
+        if "uploaded_docs" not in st.session_state:
+            st.session_state.uploaded_docs = []
+
+        for uf in uploaded_files:
+            if uf.name not in st.session_state.uploaded_docs:
+                with st.spinner(f"Indexing {uf.name}…"):
+                    result = _index_uploaded_file(uf, store)
+                if result:
+                    st.session_state.uploaded_docs.append(result)
+                    st.success(f"✅ Indexed: {uf.name}")
+                    st.rerun()
+
+    st.divider()
+
+    # ── Suggested questions ────────────────────────────────────────────────────
     st.markdown("**Suggested Questions**")
 
     topics = {
@@ -413,21 +409,21 @@ st.markdown("""
     <h1>Copa Airlines — Knowledge Assistant</h1>
     <p>Powered by the Copa Knowledge Base · AI-generated answers with source citations</p>
   </div>
-  <div style="margin-left:auto">
-    <span class="copa-badge">RAG Powered</span>
-  </div>
+  <div style="margin-left:auto"><span class="copa-badge">RAG Powered</span></div>
 </div>
 """, unsafe_allow_html=True)
 
 # ── Session state ─────────────────────────────────────────────────────────────
 if "messages" not in st.session_state:
-    st.session_state.messages  = []
+    st.session_state.messages      = []
 if "citations" not in st.session_state:
-    st.session_state.citations = {}
+    st.session_state.citations     = {}
 if "pending_prompt" not in st.session_state:
     st.session_state.pending_prompt = None
+if "uploaded_docs" not in st.session_state:
+    st.session_state.uploaded_docs  = []
 
-# ── Welcome card (only when no messages yet) ──────────────────────────────────
+# ── Welcome card ──────────────────────────────────────────────────────────────
 if not st.session_state.messages:
     st.markdown("""
 <div class="copa-welcome">
@@ -435,10 +431,10 @@ if not st.session_state.messages:
   <p>
     Ask any question about Copa's systems — sign-in procedures, report types, cash accounting,
     transaction processing, and more. Every answer is drawn directly from official Copa documents
-    and includes the exact page and section it came from.
-    <br><br>
-    Use the <strong>Suggested Questions</strong> in the sidebar to get started quickly,
-    or type your own question below.
+    and includes the exact page and section it came from.<br><br>
+    Use the <strong>Suggested Questions</strong> in the sidebar to get started, or
+    <strong>upload additional documents</strong> (PDFs, Word files, PowerPoint decks) from your
+    SharePoint folder — they're indexed and searchable immediately.
   </p>
 </div>
 """, unsafe_allow_html=True)
