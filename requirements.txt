@@ -1,3 +1,15 @@
 anthropic>=0.50.0
 pymupdf>=1.24.0
 streamlit>=1.35.0
+
+# RAG dependencies
+openai>=1.30.0          # text-embedding-3-small
+chromadb>=0.5.0         # in-memory vector store (fallback / local dev)
+python-docx>=1.1.0      # DOCX ingestion
+python-pptx>=0.6.23     # PPTX ingestion
+
+# Pinecone — persistent cloud vector store (recommended for 300 MB+ content)
+pinecone>=3.0.0
+
+# SharePoint ingestion (optional — only needed for --sharepoint mode)
+requests>=2.32.0        # Graph API HTTP client
